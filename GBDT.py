@@ -1,128 +1,152 @@
-# 这个代码干的事情其实就是用梯度提升回归树 (GradientBoostingRegressor, GBDT) 对地理网格数据建模，并做特征重要性分析 + 偏依赖图 (PDP) 提取。
-import geopandas as gpd
+from libpysal.weights import DistanceBand, lag_spatial
+from spreg import ML_Lag
 import pandas as pd
 import numpy as np
+import geopandas as gpd
 import os
-import re
-import matplotlib.pyplot as plt
-from sklearn.ensemble import GradientBoostingRegressor
-from sklearn.metrics import r2_score, mean_squared_error
-from sklearn.model_selection import RandomizedSearchCV
-from sklearn.inspection import PartialDependenceDisplay
-from sklearn.model_selection import train_test_split
-from sklearn.model_selection import RepeatedKFold
-from scipy.stats import randint, uniform, loguniform
 
-# 文件夹路径
+def star(p):
+    return '***' if p < 0.001 else '**' if p < 0.01 else '*' if p < 0.05 else '.' if p < 0.1 else ''
+
 grid_folder = r'D:\seoul\grids\lst_map\final_clean\480_based'
-def run_gbdt(grid_folder, years=[2016, 2023], n=0):
-    for year in years:
-        target_vars = [f'nor_{year}', f'ext_{year}', f'hr_{year}']
-        explanatory_vars = ['BCR', 'BHV',  'SVF', 'NDVI', 'EV', 'WR', 'Dist_W', 'Dist_P', 'Dist_M','X','Y'] # 顺序很讲究
-        # 保存结果
-        all_results = []
-        pdp_records = []
-        r2_comparison = []
+output_fig_dir = r'D:\seoul\grids\lst_map\final_clean\480_based\statistics\fig\figures'
+output_file = r'D:\seoul\grids\lst_map\final_clean\480_based\statistics\SDEM_effects.xlsx'
 
-        param_dist = {
-            'n_estimators': [4168], #4168
-            'learning_rate': loguniform(0.002, 0.355), #(0.002, 0.355)
-            'subsample': uniform(0.545, 0.413), # [0.545,0.958]
-            'max_depth' : randint(5, 14), # [5, 13]
-            'min_samples_split':[2], #2
-            'max_features': uniform(0.335, 0.581), #[0.335,0.916]
-            }
+for year in [2016, 2023]:
+    target_vars = [f'nor_{year}', f'ext_{year}', f'hr_{year}']
+    explanatory_vars = ['BCR', 'BHV',  'SVF', 'NDVI', 'EV', 'WR', 'Dist_P', 'Dist_M', 'Dist_W']
+    explanatory_vars_clean = ['BCR', 'BHV',  'SVF', 'NDVI', 'EV', 'WR']
+    results_by_target = {t: [] for t in target_vars}
+    # 使用 ExcelWriter，mode='a' 可以追加 sheet（如果文件存在）
+    with pd.ExcelWriter(output_file, engine='openpyxl', mode='a' if os.path.exists(output_file) else 'w') as writer:
 
-        # === 主循环 ===
         for filename in os.listdir(grid_folder):
-            if filename.endswith(f'city{year}_lst_ratio_grid_480m_bcr_bhv_ndvi_svf_ev_distbp_distmt_distwb_wr_xy.shp'):
-                input_path = os.path.join(grid_folder, filename)
-                match = re.search(r'(\d{3,5})m', filename)
-                grid_size = match.group(1)
-
-                gdf = gpd.read_file(input_path)
-                gdf_clean = gdf.replace([np.inf, -np.inf], np.nan).dropna(subset=target_vars + explanatory_vars)
+            if filename.endswith('480m_bcr_bhv_ndvi_svf_ev_distbp_distmt_distwb_wr_xy.shp') and filename.startswith(f'city{year}'):
+                path = os.path.join(grid_folder, filename)
+                gdf = gpd.read_file(path).replace([np.inf, -np.inf], np.nan)
 
                 for target in target_vars:
-                    X = gdf_clean[explanatory_vars]
-                    y = gdf_clean[target]
+                    if target not in gdf.columns:
+                        continue
 
-                    #####################################################################
-                    # 用20个 random seeds
-                    np.random.seed(0)  # 固定种子以便复现
-                    random_seeds = np.random.choice(10000, size=20, replace=False)
+                    data = gdf[explanatory_vars + [target]].dropna()
+                    if data.empty:
+                        continue
 
-                    # print(random_seeds)
-                    n = n
-                    #####################################################################
-                    for r in [random_seeds[n]]:
+                    data_gdf = gdf.loc[data.index]
+                    w = DistanceBand.from_dataframe(data_gdf, threshold=1000, binary=False)
+                    w.transform = 'r'
 
-                        # 数据划分
-                        X_train, X_test, y_train, y_test = train_test_split(X, y, test_size=0.2, random_state=r) # 切20次
+                    # y
+                    y = data[target].values.reshape(-1, 1)
 
-                        gbdt = GradientBoostingRegressor(random_state=0)
-                        
-                        cv = RepeatedKFold(n_splits=5, n_repeats=20, random_state=0)
+                    # X: 原变量
+                    X_main = data[explanatory_vars].values
+                    # print(explanatory_vars)
 
-                        search = RandomizedSearchCV(
-                            estimator=gbdt,
-                            param_distributions=param_dist,
-                            n_iter= 200,
-                            scoring='r2',
-                            cv=cv, # cross validation
-                            verbose=2,
-                            n_jobs=-1,
-                            random_state=0
-                        )
+                    # WX_clean: 只 lag clean 变量
+                    WX_clean = lag_spatial(w, data[explanatory_vars_clean].values)
+                    # print(explanatory_vars_clean)
 
-                        search.fit(X_train, y_train)
+                    # 合并常数 + X_main + WX_clean
+                    X_all = np.hstack([np.ones((len(data), 1)), X_main, WX_clean])
 
-                        results_df = pd.DataFrame(search.cv_results_)
-                        results_df.to_csv(folder, rf"{n}_{r}_GBDT_{target}_cv_results.csv", index=False)
+                    name_x = ['const'] + explanatory_vars + [f"W_{v}" for v in explanatory_vars_clean]
 
-                        # 使用测试集评估
-                        best_model = search.best_estimator_
-                        y_train_pred = best_model.predict(X_train)
-                        y_test_pred = best_model.predict(X_test)
+                    # 模型
+                    model = ML_Error(
+                        y, X_all,
+                        w=w,
+                        name_y=target,
+                        name_x=name_x,
+                        spat_diag=True
+                    )
 
-                        r2_train = best_model.score(X_train, y_train)
-                        r2_test = r2_score(y_test, y_test_pred)
+                    betas = model.betas.flatten()
 
-                        rmse_train = np.sqrt(mean_squared_error(y_train, y_train_pred))
-                        rmse_test = np.sqrt(mean_squared_error(y_test, y_test_pred))
+                    # ==================================================
+                    # 直接效应：原变量系数
+                    direct = betas[1:1+len(explanatory_vars)]
+                    # 间接效应：WX 系数
+                    indirect = betas[1+len(explanatory_vars):]
 
-                        print(f" {filename} | {target} 最佳参数: {search.best_params_} | R²_train={r2_train:.3f} | R²_test={r2_test:.3f}")
+                    total = []
+                    for var in explanatory_vars:
+                        if var in explanatory_vars_clean:
+                            total.append(direct[explanatory_vars.index(var)] + 
+                                        indirect[explanatory_vars_clean.index(var)])
+                        else:
+                            total.append(direct[explanatory_vars.index(var)])  # 没有 WX，对应间接效应为 0
 
-                        for var, importance in zip(explanatory_vars, best_model.feature_importances_):
-                            all_results.append({
-                                'GridSize': grid_size,
-                                'Target': target,
-                                'Feature': var,
-                                'Random seed':r,
-                                'FeatureImportance_TrainModel': round(importance, 4),
-                                'Train_R2': round(r2_train, 4),
-                                'Train_RMSE': round(rmse_train, 4),
-                                'Test_R2': round(r2_test, 4),
-                                'Test_RMSE': round(rmse_test, 4),
-                                **search.best_params_
-                            })
-                            r2_comparison.append({
-                                'GridSize': grid_size,
-                                'Target': target,
-                                'Random seed':r,
-                                'Train_R2': round(r2_train, 4),
-                                'Test_R2': round(r2_test, 4),
-                                'Train_RMSE': round(rmse_train, 4),
-                                'Test_RMSE': round(rmse_test, 4)
-                            })
-                
+                    # 构建表格
+                    effects_df = pd.DataFrame({
+                        "Variable": explanatory_vars,
+                        "Direct": direct,
+                        "Indirect": [indirect[explanatory_vars_clean.index(v)] if v in explanatory_vars_clean else 0 for v in explanatory_vars],
+                        "Total": total
+                    })
 
-        # 保存模型训练后的结果
-        df_all = pd.DataFrame(all_results)
-        folder = os.path.join(grid_folder, r'Machine Learning')
-        os.makedirs(folder,exist_ok=True)
-        df_all.to_excel(os.path.join(folder, f'{year} GBDT_Random_Search_Results.xlsx'), index=False)
-        df_r2 = pd.DataFrame(r2_comparison)
-        df_r2 = df_r2.sort_values(['Target', 'GridSize'])
-        df_r2.to_excel(os.path.join(folder, f'{year} R2_Comparison_Train_vs_Test.xlsx'), index=False)
-        # print("✅ R² train vs test comparison saved.")
+                    print(f"=== {target} ===")
+                    print(effects_df)
+
+                    # 保存到 Excel，不同 target 用 sheet 名
+                    sheet_name = target
+                    effects_df.to_excel(writer, sheet_name=sheet_name, index=False)
+                    print(f"Saved sheet: {sheet_name}")
+                    # ==================================================
+
+                    # ====== 绘制曲线 ======
+                    for var in explanatory_vars:
+                        var_idx = explanatory_vars.index(var)
+                        x_vals = np.linspace(data[var].min(), data[var].max(), 50)
+                        y_direct = effects_df.loc[var_idx, "Direct"] * x_vals
+                        y_indirect = effects_df.loc[var_idx, "Indirect"] * x_vals
+                        y_total = effects_df.loc[var_idx, "Total"] * x_vals
+
+                        plt.figure(figsize=(6,4))
+                        plt.plot(x_vals, y_direct, label="Direct", color="blue")
+                        plt.plot(x_vals, y_indirect, label="Indirect", color="orange")
+                        plt.plot(x_vals, y_total, label="Total", color="green")
+                        plt.xlabel(var)
+                        plt.ylabel(f"Predicted change in {target}")
+                        plt.title(f"{target} - Effect of {var}")
+                        plt.legend()
+                        plt.tight_layout()
+                        plt.savefig(os.path.join(output_fig_dir, f"{target}_{var}_effect_curve.png"), dpi=300)
+                        plt.close()
+
+                    # ====== 绘制曲线 ======
+                    stats = model.z_stat
+
+                    rows = []
+                    for i, var in enumerate(name_x):
+                        coef = f"{betas[i]:.4f}{star(stats[i][1])}"
+                        tval = round(stats[i][0], 3)
+                        pval = round(stats[i][1], 4)
+                        rows.append([var, coef, tval, pval])
+
+                    rho_coef = f"{betas[-1]:.4f}{star(stats[-1][1])}"
+                    rho_t = round(stats[-1][0], 3)
+                    rho_p = round(stats[-1][1], 4)
+                    rows.append(["rho", rho_coef, rho_t, rho_p])
+
+                    rows.append(["Log-likelihood", round(float(model.logll), 4), "", ""])
+                    r2_val = getattr(model, 'pr2', getattr(model, 'r2', np.nan))
+                    rows.append(["R²", round(float(r2_val), 4), "", ""])
+                    rows.append(["", "", "", ""])
+
+                    df_file = pd.DataFrame(rows, columns=["Feature", "Coefficient", "t-value", "p-value"])
+                    results_by_target[target].append(df_file)
+
+                    outdir = os.path.join(grid_folder, 'statistics')
+                    os.makedirs(outdir, exist_ok=True)
+                    out_xlsx = os.path.join(outdir, f'{year}_SDEM.xlsx')
+
+        with pd.ExcelWriter(out_xlsx) as wtr:
+            for target in target_vars:
+                if not results_by_target[target]:
+                    continue
+                df_target = pd.concat(results_by_target[target], ignore_index=True)
+                df_target.to_excel(wtr, sheet_name=target, index=False)
+
+        print(f"✅ 已生成：{out_xlsx}")
