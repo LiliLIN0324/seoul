@@ -38,11 +38,15 @@
 # 忽略 文件夹
 /Final_data/
 /b_satellite_img/
+/b_satellite_img/normal_heat_day_lst/
 /c_data/
 /lst_map/
 /grids/
 /html study/
 /MyProject6/
+/MyProject6/index/
+/SDM/
+/discord/
 
 # Python 缓存
 __pycache__/
