@@ -1,0 +1,30 @@
+digraph SpatialModelSelection {
+    rankdir=TB; // Top to Bottom (竖向)
+    node [shape=rectangle, style=rounded, fontsize=12, fontname="Helvetica"];
+
+    OLS [label="OLS"];
+    Spatial [shape=diamond, label="Spatial?"];
+    Moran [label="Moran's I statistics"];
+    WhichModel [label="Which model?"];
+    SDM [label="SDM"];
+    SEM [label="SEM"];
+    LM [label="Lagrange Multiplier"];
+    Overfit [shape=diamond, label="Is it overfit?"];
+    Partial [label="Partial SDEM"];
+
+    // 连线逻辑
+    OLS -> Spatial;
+    Spatial -> Moran [label="No"];
+    Spatial -> WhichModel [label="Yes"];
+    Moran -> WhichModel;
+
+    WhichModel -> SDM;
+    WhichModel -> SEM;
+
+    SDM -> LM;
+    SEM -> LM;
+
+    LM -> Overfit;
+    Overfit -> Partial [label="No"];
+}
+
