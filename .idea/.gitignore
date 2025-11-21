@@ -8,12 +8,11 @@
 *.sbx
 *.sr.lock
 
-# 忽略 GIS 文件
+# 忽略gis文件
 *.gdb
 *.dat
 *.nit
 *.xml
-
 # 忽略栅格图像
 *.tif
 *.tif.over
@@ -22,12 +21,12 @@
 *.cfs
 *.del
 *.tfw
+*.tbx
 
-# 忽略图片
 *.jpg
 *.png
 
-# 忽略压缩文件
+# 忽略zip
 *.zip
 
 # 忽略 Excel / CSV 输出
@@ -36,7 +35,7 @@
 *.pdf
 *.txt
 
-# 忽略特定文件夹
+# 忽略 文件夹
 /Final_data/
 /b_satellite_img/
 /b_satellite_img/normal_heat_day_lst/
@@ -47,9 +46,6 @@
 /MyProject6/
 /MyProject6/index/
 /SDM/
-/discord/
-/Seoul/
-/lst/
 /discord/
 
 # Python 缓存
